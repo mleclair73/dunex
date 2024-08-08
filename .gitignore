@@ -25,4 +25,4 @@ ipython_config.py
 *.csv
 *.his
 **/figures/**/*
-
+**/third_party/**
