@@ -25,4 +25,5 @@ ipython_config.py
 *.csv
 *.his
 **/figures/**/*
-**/third_party/**
+third_party/
+thirdparty/
