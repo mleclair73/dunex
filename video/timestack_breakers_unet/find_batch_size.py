@@ -3,20 +3,25 @@ import torch
 import time
 from tqdm import tqdm
 import numpy as np
-from dataset import DunexDataset
+from loss import calc_loss
+from combined_dataset import DunexDataset
 from network import ResNetUNet
 from tqdm import tqdm 
+from collections import defaultdict
 # Your existing setup
-ds = DunexDataset('cvat_annotations/cvat_test/images', 'cvat_annotations/cvat_test/annotations_poly.xml', patch_size=(128, 128))
-train_split = 0.75
-train, val = torch.utils.data.random_split(ds, [400, 104])
+
+samples_per_image = 64
+ds = DunexDataset(['cvat_annotations/triplets_fully_labeled/annotations_poly_updated.xml', 
+                   'cvat_annotations/additional_data/annotations_poly.xml'],
+                  samples_per_image = samples_per_image)
+train, val, test = torch.utils.data.random_split(ds, (225 * samples_per_image, 25 * samples_per_image, 7 * samples_per_image)) # 257 (* 3) * 32
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 num_class = 1
 model = ResNetUNet(num_class).to(device)
 
-def benchmark_batch_size(dataset, model, device, batch_sizes=[32, 64, 128, 256, 512], num_iterations=1):
+def benchmark_batch_size(dataset, model, device, batch_sizes, num_iterations=1):
     """
     Benchmark different batch sizes to find optimal training speed.
     
@@ -57,14 +62,16 @@ def benchmark_batch_size(dataset, model, device, batch_sizes=[32, 64, 128, 256, 
             samples_processed = 0
             
             print('Iterations')
+            metrics = defaultdict(float)
             for i in tqdm(range(num_iterations)):
                 for inputs, targets in dataloader:
                     inputs = inputs.to(device)
-                    targets = targets.to(device)
+                    labels = targets.to(device)
                     
                     optimizer.zero_grad()
                     outputs = model(inputs)
-                    loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs, targets)
+                    loss = calc_loss(outputs, labels, metrics, i, start_boundary_epoch=0)
+                    # loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs, targets)
                     loss.backward()
                     optimizer.step()
                     
@@ -106,7 +113,7 @@ def find_optimal_batch_size(dataset, model, device):
     Find and print the optimal batch size based on benchmarking results.
     """
     # Test various batch sizes
-    batch_sizes = [8, 16, 32, 64, 128, 256]
+    batch_sizes = [32, 64, 128, 256, 512, 1024]
     results = benchmark_batch_size(dataset, model, device, batch_sizes)
     
     # Print results
@@ -131,11 +138,3 @@ def find_optimal_batch_size(dataset, model, device):
 if __name__ == "__main__":
     # Find optimal batch size
     optimal_batch_size = find_optimal_batch_size(train, model, device)
-    
-    # Create new dataloaders with optimal batch size
-    dataloaders = {
-        'train': DataLoader(train, batch_size=optimal_batch_size, shuffle=True, num_workers=0),
-        'val': DataLoader(val, batch_size=optimal_batch_size, shuffle=True, num_workers=0)
-    }
-    
-    print(f"\nCreated new dataloaders with optimal batch size: {optimal_batch_size}")

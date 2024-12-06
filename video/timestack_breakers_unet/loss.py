@@ -92,34 +92,6 @@ def focal_loss(pred, target, smooth=1., alpha=0.25, gamma=2):
     focal = focal.mean()
     return focal
 
-# def discriminitive_loss(logits, labels, temperature=0.5):
-#     # Reshape from [B, 1, H, W] to [B*H*W, 2] for binary classification
-#     B, C, H, W = logits.shape
-#     logits_flat = logits.view(B*H*W, 1)
-    
-#     # For binary classification, we need logits for both classes
-#     # Convert single logit to two logits (for class 0 and 1)
-#     logits_flat = torch.cat([-logits_flat, logits_flat], dim=1)
-    
-#     # Flatten labels to [B*H*W] and convert to long type
-#     labels_flat = labels.view(-1).long()
-    
-#     # Apply temperature scaling
-#     sharp_logits = logits_flat / temperature
-    
-#     # Calculate cross entropy
-#     loss = F.cross_entropy(sharp_logits, labels_flat)
-    
-#     # Calculate entropy using two-class probabilities
-#     probabilities = F.softmax(logits_flat, dim=1)
-#     entropy = -(probabilities * torch.log(probabilities + 1e-12)).sum(1).mean()
-    
-#     print("Cross Entropy Loss:", loss.item())
-#     print("Entropy:", entropy.item())
-    
-#     return loss + 0.1 * entropy
-
-
 def discriminitive_loss(logits, labels, temperature=0.05):  # Lower temperature for sharper predictions
     # Flatten both tensors
     logits_flat = logits.view(-1)
@@ -143,31 +115,6 @@ def discriminitive_loss(logits, labels, temperature=0.05):  # Lower temperature 
     
     # Combine losses with higher weight on confidence penalty
     return bce_loss + 0.2 * entropy + 0.3 * confidence_penalty
-
-
-# def discriminitive_loss(logits, labels, temperature=0.05):  # Lower temperature for sharper predictions
-#     # Flatten both tensors
-#     logits_flat = logits.view(-1)
-#     labels_flat = labels.view(-1)
-    
-#     # Apply temperature scaling (more aggressive)
-#     sharp_logits = logits_flat / temperature
-    
-#     # Binary cross entropy with logits
-#     bce_loss = F.binary_cross_entropy_with_logits(sharp_logits, labels_flat)
-    
-#     # Calculate probabilities
-#     probabilities = torch.sigmoid(logits_flat)
-    
-#     # Add confidence penalty - encourage predictions to be closer to 0 or 1
-#     confidence_penalty = -torch.mean(torch.abs(probabilities - 0.5))
-    
-#     # Calculate entropy (modified for binary case)
-#     prob_dist = torch.stack([1 - probabilities, probabilities], dim=1)
-#     entropy = -(prob_dist * torch.log(prob_dist + 1e-12)).sum(1).mean()
-    
-#     # Combine losses with higher weight on confidence penalty
-#     return bce_loss + 0.2 * entropy + 0.3 * confidence_penalty
 
 
 def discriminitive_loss(logits, labels, temperature=0.05):
@@ -198,12 +145,13 @@ def discriminitive_loss(logits, labels, temperature=0.05):
     return bce_loss + 0.3 * middle_range_penalty + 0.1 * spatial_penalty
 
 
-def calc_loss(pred, target, metrics, epoch=0, start_boundary_epoch=50, max_boundary_weight=0.4, 
-              start_discriminative_epoch=30, max_discriminative_weight=0.4):  # Increased max weight
-    """Loss function with delayed and gradually increasing boundary and discriminative losses"""
-    # Calculate base losses
-    focal = focal_loss(pred, target, gamma=3.0, alpha=0.8)
-    pred_sigmoid = F.sigmoid(pred)
+def calc_loss(pred, target, metrics, epoch=0, start_boundary_epoch=50, 
+              max_boundary_weight=0.2, start_discriminative_epoch=30,
+              max_discriminative_weight=0.2):
+    """Loss function with gradient scaling and stability improvements"""
+    # Calculate base losses with scaling
+    pred_sigmoid = torch.clamp(F.sigmoid(pred), min=1e-7, max=1-1e-7)
+    focal = focal_loss(pred, target, gamma=2.0, alpha=0.25)  # Reduced gamma and alpha
     dice = dice_loss(pred_sigmoid, target)
     
     # Initialize weights
@@ -212,50 +160,43 @@ def calc_loss(pred, target, metrics, epoch=0, start_boundary_epoch=50, max_bound
     current_boundary_weight = 0.0
     current_discriminative_weight = 0.0
     
-    # Calculate discriminative loss if we're past start epoch
+    # Gradual ramp-up for all components
     if epoch >= start_discriminative_epoch:
-        disc_loss = discriminitive_loss(pred, target, temperature=0.05)
-        
-        # More aggressive ramp-up for discriminative loss
-        ramp_epochs = 15  # Faster ramp-up
+        disc_loss = discriminitive_loss(pred, target, temperature=0.1)  # Increased temperature
+        ramp_epochs = 30  # Slower ramp-up
         current_discriminative_weight = max_discriminative_weight * min(1.0,
             (epoch - start_discriminative_epoch) / ramp_epochs)
     else:
         disc_loss = torch.tensor(0.0, device=pred.device)
     
-    # Calculate boundary loss if we're past start boundary epoch
     if epoch >= start_boundary_epoch:
         boundary = boundary_loss(pred, target)
-        
-        # Gradually increase boundary weight
-        ramp_epochs = 50
+        ramp_epochs = 100  # Much slower ramp-up
         current_boundary_weight = max_boundary_weight * min(1.0,
             (epoch - start_boundary_epoch) / ramp_epochs)
     else:
         boundary = torch.tensor(0.0, device=pred.device)
     
-    # Calculate final weights ensuring they sum to 1.0
+    # Ensure weights sum to 1.0 with smoother transitions
     total_special_weight = current_boundary_weight + current_discriminative_weight
     remaining_weight = 1.0 - total_special_weight
     
-    # Distribute remaining weight between focal and dice
-    focal_weight = 0.5 * remaining_weight
-    dice_weight = 0.5 * remaining_weight
+    focal_weight = 0.6 * remaining_weight  # Slightly higher weight on focal
+    dice_weight = 0.4 * remaining_weight
     
-    # Combine all losses with discriminative loss having higher impact
+    # Combine losses with gradient scaling
     loss = (focal * focal_weight + 
             dice * dice_weight + 
             boundary * current_boundary_weight +
             disc_loss * current_discriminative_weight)
     
-    # Update metrics
+    # Update metrics with scaled values
     metrics['focal'] += focal.data.cpu().numpy() * target.size(0)
     metrics['dice'] += dice.data.cpu().numpy() * target.size(0)
     metrics['loss'] += loss.data.cpu().numpy() * target.size(0)
     
     if epoch >= start_boundary_epoch:
         metrics['boundary'] += boundary.data.cpu().numpy() * target.size(0)
-        
     if epoch >= start_discriminative_epoch:
         metrics['disc'] += disc_loss.data.cpu().numpy() * target.size(0)
     

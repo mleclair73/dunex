@@ -1,0 +1,39 @@
+Models and Descriptions
+
+best_model_20241105.pt
+- Original model trained on partial dataset
+    - Random intensity changes
+    - Gaussian Noise
+- 128x128
+- 200 epochs
+
+best_model_20241119.pt
+- Original model trained on full first batch of images & some augmentations (0.5)
+    - random brightness + contrast (0.25)
+    - random line brightness and contrast (0.25)
+- 128x128
+- 200 epochs very low error
+
+best_model_20241120.pt
+- Original Model trained on full first batch + second 'hard' batch + augmentations (0.5)
+    - random brightness (0.25)
+    - vertical gradient (0.25, radius=5)
+    - angled gradient (0.25, radius=5)
+- 50 epochs
+
+best_model_20241128.pt
+- Original Model trained on full first batch + second 'hard' batch + augmentations (0.5)
+    - random brightness (0.25)
+    - vertical gradient (0.25, radius=5)
+    - angled gradient (0.25, radius=5)
+- 200 epochs
+
+
+best_model_20211202.pt
+- not sure what this is
+
+best_model_20211203.pt
+- Same model trained with all data and hard annotations including missing data
+- blew up after ~75 epochs, but already with pretty great performance
+- not sure what this is
+

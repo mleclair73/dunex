@@ -13,10 +13,10 @@ def convrelu(in_channels, out_channels, kernel, padding):
 
 
 class ResNetUNet(nn.Module):
-    def __init__(self, n_class):
+    def __init__(self, n_class, upsample_mode='bilinear'):
         super().__init__()
 
-        self.base_model = models.resnet18(pretrained=True)
+        self.base_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         self.base_layers = list(self.base_model.children())
 
         self.layer0 = nn.Sequential(*self.base_layers[:3]) # size=(N, 64, x.H/2, x.W/2)
@@ -30,7 +30,7 @@ class ResNetUNet(nn.Module):
         self.layer4 = self.base_layers[7]  # size=(N, 512, x.H/32, x.W/32)
         self.layer4_1x1 = convrelu(512, 512, 1, 0)
 
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.upsample = nn.Upsample(scale_factor=2, mode=upsample_mode, align_corners=upsample_mode in ['linear', 'bilinear', 'bicubic', 'trilinear'] or None)
 
         self.conv_up3 = convrelu(256 + 512, 512, 3, 1)
         self.conv_up2 = convrelu(128 + 512, 256, 3, 1)

@@ -4,7 +4,7 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 import torch
 import torchvision.transforms.functional as TF
-
+from patchify import patchify, unpatchify
 
 def predict_video_timestack(model, ts, patch_size=128, overlap=32, temporal_batch_size=16, spatial_batch_size=8, device='cpu'):
     """
@@ -122,9 +122,100 @@ def predict_video_timestack(model, ts, patch_size=128, overlap=32, temporal_batc
     
     return predictions
 
+import numpy as np
+import torch
+import torch.nn.functional as F
+from patchify import patchify, unpatchify
+
+def predict_large_image_patchify(
+    model, image, patch_size=128, overlap=32, batch_size=4, device="cuda", flip=False,
+):
+    """
+    Predicts segmentation for a large image using patchify for sliding window.
+    """
+    model.eval()
+    
+    # Format image
+    if flip:
+        image = np.flip(image, 0)
+    if len(image.shape) == 2:
+        image = image[None, None, :, :]
+    elif len(image.shape) == 3:
+        image = image[None, :, :, :]
+        
+    if image.shape[1] == 1:
+        image = np.repeat(image, 3, axis=1) if isinstance(image, np.ndarray) else image.repeat(1, 3, 1, 1)
+    
+    _, channels, height, width = image.shape
+    stride = patch_size - overlap
+    
+    # Calculate padding
+    h_padding = (stride - (height - patch_size) % stride) % stride
+    w_padding = (stride - (width - patch_size) % stride) % stride
+    
+    padded_height = height + h_padding
+    padded_width = width + w_padding
+    
+    # Pad image
+    if h_padding > 0 or w_padding > 0:
+        image = F.pad(torch.from_numpy(image) if isinstance(image, np.ndarray) else image, 
+                     (0, w_padding, 0, h_padding), mode="reflect")
+        image = image.cpu().numpy() if torch.is_tensor(image) else image
+    
+    # Prepare for patchify (H, W, C)
+    image = image[0].transpose(1, 2, 0)
+    
+    # Extract patches and remove the extra dimension
+    patches = patchify(image, (patch_size, patch_size, 3), step=stride).squeeze(2)
+    
+    # Process patches
+    n_h, n_w = patches.shape[:2]
+    total_patches = n_h * n_w
+    patches = patches.reshape(total_patches, patch_size, patch_size, 3)
+    patches = torch.from_numpy(patches.transpose(0, 3, 1, 2)).float().to(device)
+    
+    # Predict in batches
+    predictions = []
+    for i in range(0, total_patches, batch_size):
+        batch = patches[i:i + batch_size]
+        with torch.no_grad():
+            pred = torch.sigmoid(model(batch))
+            predictions.append(pred.cpu())
+    
+    predictions = torch.cat(predictions, dim=0)
+    
+    # Reshape predictions
+    predictions = predictions.numpy()
+    predictions = predictions.transpose(0, 2, 3, 1)  # (N, H, W, C)
+    predictions = predictions.reshape(n_h, n_w, patch_size, patch_size, 1)
+    
+    # Create reconstruction
+    reconstructed = np.zeros((padded_height, padded_width, 1))
+    weight = np.zeros((padded_height, padded_width, 1))
+    
+    # Manually blend patches
+    for i in range(n_h):
+        for j in range(n_w):
+            y = i * stride
+            x = j * stride
+            patch = predictions[i, j]
+            patch_weight = np.ones_like(patch)
+            
+            reconstructed[y:y + patch_size, x:x + patch_size] += patch
+            weight[y:y + patch_size, x:x + patch_size] += patch_weight
+    
+    # Average overlapping regions
+    reconstructed = reconstructed / (weight + 1e-8)
+    
+    # Crop to original size
+    result = reconstructed[:height, :width, 0]
+    if flip:
+        result = np.flip(result, 0)
+    
+    return result
 
 def predict_large_image(
-    model, image, patch_size=128, overlap=32, batch_size=4, device="cuda"
+    model, image, patch_size=128, overlap=32, batch_size=4, device="cuda", flip=False,
 ):
     """
     Predicts segmentation for a large image using sliding window with overlap.
@@ -143,7 +234,8 @@ def predict_large_image(
     model.eval()
 
     # Add batch and channel dims if needed
-    image = np.flip(image, 0)
+    if flip:
+        image = np.flip(image, 0)
     if len(image.shape) == 2:
         image = image[None, None, :, :]
     elif len(image.shape) == 3:
@@ -233,10 +325,13 @@ def predict_large_image(
     # Crop to original size
     prediction = prediction[:, :, :height, :width]
 
-    return np.flip(prediction.cpu().numpy()[0, 0], 0)
+    if flip:
+        return np.flip(prediction.cpu().numpy()[0, 0], 0)
+    else:
+        return np.flip(prediction.cpu().numpy()[0, 0], 0)
 
 
-def preprocess_image(img, device="cpu"):
+def preprocess_image(img, device="cpu", flip=False):
     """
     Preprocess image for model input:
     1. Convert to tensor
@@ -252,7 +347,8 @@ def preprocess_image(img, device="cpu"):
         Preprocessed tensor ready for model input
     """
     # Convert to tensor and add batch dimension if needed
-    img = np.flip(img, 0)
+    if flip:
+        img = np.flip(img, 0)
     if not torch.is_tensor(img):
         img = TF.to_tensor(img / 255.0)
 

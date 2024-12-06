@@ -4,7 +4,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict
 from xml.dom import minidom
-import sys
+from pathlib import Path
 
 def parse_polylines_by_image(xml_content: str) -> Dict[str, Dict]:
     """Parse polyline points from XML content, grouped by image name."""
@@ -42,6 +42,7 @@ def parse_polygons_from_xml(xml_file: str) -> Dict[str, Dict]:
     
     for image in root.findall('.//image'):
         image_name = image.get('name')
+        image_path = str(Path(xml_file).parent / 'images' / image_name)
         width = int(image.get('width'))
         height = int(image.get('height'))
         
@@ -53,7 +54,7 @@ def parse_polygons_from_xml(xml_file: str) -> Dict[str, Dict]:
             polygons.append(points)
             
         if polygons:
-            image_polygons[image_name] = {
+            image_polygons[image_path] = {
                 'polygons': polygons,
                 'width': width,
                 'height': height
