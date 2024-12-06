@@ -28,3 +28,6 @@ ipython_config.py
 third_party/
 thirdparty/
 *.png
+*.pt
+*.gif
+*.npy
